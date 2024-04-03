@@ -45,7 +45,7 @@ pub struct Emu {
 }
 
 impl Emu {
-    pub fn New() -> Emu {
+    pub fn new() -> Emu {
         let mut e = Emu {
             pc: START_ADDR,
             ram: [0; RAM_SIZE],
@@ -92,7 +92,7 @@ impl Emu {
 
     }
 
-    fn execute(&mut self, op: u16) {
+    fn _execute(&mut self, op: u16) {
         //decode
         let dig1 = (op & 0xF000) >> 12;
         let dig2 = (op & 0x0F00) >> 8;
@@ -256,9 +256,128 @@ impl Emu {
                 let r: u8 = random();
 
                 self.v_reg[x] = r & nn;
-
             }
-            (_, _, _, _) => unimplemented!("to be implemented"),
+            //0xDXYN draw sprites, get (x,y) from VX, VY, N is number of rows
+            (0xD, _, _, _) => {
+                //xy coords
+                let xcoord = 0xF00 & op as usize;
+                let ycoord = 0xF0 & op as usize;
+                //num rows = height of sprite
+                let n = 0xF & op as usize;
+                
+                let mut flipped = false;
+                for line in 0..n {
+                    let addr = self.i_reg + line as u16;
+                    //base pixel address
+                    let pixels = self.ram[addr as usize];
+
+                    for col in 0..8 {
+                        //basically get leftmost bit value to rightmost, i.e. first to lsat column
+                        if pixels & (0b1000_0000 >> col) != 0 {
+                            let x = (xcoord + col) as usize % SCREEN_WIDTH;
+                            let y = (ycoord + line) as usize % SCREEN_HEIGHT;
+
+                            //index of bit
+                            let idx = x + y * SCREEN_WIDTH; //same concept as 2d indexing
+                            flipped |= self.screen[idx];
+                            self.screen[idx] ^= true;
+                        }
+                    }
+                }
+                if flipped {
+                    self.v_reg[0xF] = 1;
+                } else {
+                    self.v_reg[0xF] = 0;
+                }
+            }
+            //0xEX9E skip if keys[VX] is pressed
+            (0xE, _, 9, 0xE) => {
+                let x = 0xF00 & op as usize;
+                if self.keys[self.v_reg[x] as usize] {
+                    self.pc += 2
+                }
+            }
+            //0xEXA1 same as above but skip if not pressed
+            (0xE, _, 0xA, 0x1) => {
+                let x = 0xF00 & op as usize;
+                if !self.keys[self.v_reg[x] as usize] {
+                    self.pc += 2;
+                }
+            }
+            //0xFX07 VX = DT
+            (0xF, _, 0x0, 0x7) => {
+                let x = 0xF00 & op as usize;
+                self.v_reg[x] = self.dt;
+            }
+            //waits undlessly till key pressed, store it in VX
+            //ticks continue while waiting
+            //0xFX0A wait for key press - blocking
+            (0xF, _, 0x0, 0xA) => {
+                let x = 0xF00 & op as usize;
+                let mut pressed = false;
+                for i in 0..NUM_KEYS {
+                    if self.keys[i] {
+                        self.v_reg[x] = i as u8;
+                        pressed = true;
+                        break;
+                    }
+                }
+                if !pressed {
+                    self.pc -= 2;
+                }
+            }
+            //0xFX15 DT = VX
+            (0xF, _, 0x1, 0x5) => {
+                let x = 0xF00 & op as usize;
+                self.dt = self.v_reg[x];
+            }
+            //0xFX18 ST = VX
+            (0xF, _, 0x1, 0x8) => {
+                let x = 0xF00 & op as usize;
+                self.st = self.v_reg[x];
+            }
+            //0xFX1E I += VX
+            (0xF, _, 0x1, 0xE) => {
+                let x = 0xF00 & op as usize;
+                self.i_reg = self.i_reg.wrapping_add(self.v_reg[x] as u16);
+            }
+            //0xFX29 Set I to font character in VX.
+            (0xF, _, 0x2, 0x9) => {
+                let x = 0xF00 & op as usize;
+                //each char in FONTSET occupies 5 bytes
+                //since they are stored starting from 0
+                //ith sprite address = 5 * i
+                self.i_reg = 5 * self.v_reg[x] as u16;
+            }
+            //0xFX33 store BCD encoding of VX in I
+            (0xF, _, 0x3, 0x3) => {
+                let x = 0xF00 & op as usize;
+                //since VX is u8, BCD would be off max 3 bytes as max value of u8 is 255 or 0xFF
+                //implement using double babble later on
+                let vx = self.v_reg[x];
+                let hun = vx / 100;
+                let ten = (vx / 10) % 10;
+                let ones = vx % 10;
+
+                self.ram[self.i_reg as usize] = hun;
+                self.ram[self.i_reg as usize + 1] = ten;
+                self.ram[self.i_reg as usize + 2] = ones;
+            }
+            //0xFX55 store V0 -> VX inclusive in memory starting from address at I
+            (0xF, _, 0x5, 0x5) => {
+                let x = 0xF00 & op as usize;
+                for i in 0..=x {
+                    self.ram[self.i_reg as usize + i] = self.v_reg[i as usize];
+                }
+            }
+            //0xFX65 reverse of above, store into V0 -> VX
+            (0xF, _, 0x6, 0x5) => {
+                let x = 0xF00 & op as usize;
+                for i in 0..=x {
+                    self.v_reg[i as usize] = self.ram[self.i_reg as usize + i];
+                }
+            }
+            (_, _, _, _) => panic!("invalid sequence of bytes => {}", op),
         }
 
     }
